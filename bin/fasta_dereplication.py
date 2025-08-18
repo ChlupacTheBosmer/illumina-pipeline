@@ -8,6 +8,9 @@ import subprocess
 import argparse
 import glob
 
+from pathlib import Path
+
+
 def find_files(directory,pattern):
     return glob.glob(os.path.join(directory,pattern))
 
@@ -29,13 +32,24 @@ if __name__ == "__main__":
     fasta_files = find_files(args.input_dir, '*.fasta')
 
     for fasta in fasta_files:
-    	tag = os.path.basename(fasta).split('_')[0]
-        out_fname = os.path.join(args.output_dir, tag + ".fasta")
+        # Names will have _R_merged and we want to go back to the
+        # sample name. So remove the _R_merged...
+        #
+        # NAR_BT_240701_1_S66_R_merged.fasta
+        # ->
+        # NAR_BT_240701_1_S66.fasta
+        #
+        new_fname = Path(fasta).name.replace("_R_merged", "")
+        tag = Path(new_fname).stem
+        out_fname = Path(args.output_dir) / new_fname
         try:
-    	    subprocess.check_output(['vsearch', 
-    		    					 '--derep_fulllength=%s' % fasta,
-    			    				 '--sizeout',
-    				    			 '--output=%s' % out_fname,
-    					    		 '--relabel=%s-' % tag])
+            print(f'vsearch --derep_fulllength={fasta} --sizeout --output={out_fname} --relable={tag}-')
+            subprocess.check_output([
+                'vsearch', 
+                f'--derep_fulllength={fasta}',
+                '--sizeout',
+                f'--output={out_fname}',
+                f'--relabel={tag}-'])
         except:
-            print("ERROR: Failed to run vsearch dereplication on %s" % fasta)
+            print(f"ERROR: Failed to run vsearch dereplication for: {fasta}")
+            bang

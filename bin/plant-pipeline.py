@@ -26,21 +26,24 @@ import os
 import shutil
 import fnmatch
 import sys
-import ConfigParser
 import glob
 import subprocess
 import merged_demultiplex_by_primer as demux_script
+import configparser 
+import re
 
-################################################################################
-# Allow access to the configuration file
-################################################################################
+from pathlib import Path
+from collections import defaultdict
+
+
 class Configuration:
     """Session configuration"""
-    config = ConfigParser.ConfigParser()
+    config = configparser.ConfigParser()
 
-    def __init__(self):
+    def __enter__(self):
         self.config.add_section('general')
         self.config.read(self.name())
+        return self
 
     def name(self):
         return ('%s/.plant-pipeline.ini' % os.path.expanduser('~'))
@@ -69,35 +72,96 @@ class Configuration:
     def section_add(self,section,key,value):
         self.config.set(section,key,value)
 
-    def __del__(self):
-        fd = open(self.name(),'w')
-        self.config.write(fd)
-        fd.close()
+    def save(self):
+        with open(self.name(),'w') as fd:
+            self.config.write(fd)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        '''
+        Save file
+        '''
+        self.save()
 
 
-################################################################################
-################################################################################
 def script_dir():
+    '''
+    Where the scripts are to run
+    '''
     return os.path.dirname(os.path.realpath(__file__))
 
-################################################################################
-################################################################################
-def trimmomatic_jar():
-    return '/app/genomics/Trimmomatic/0.33/Trimmomatic-0.33.jar'
 
-################################################################################
-################################################################################
-def find_files(directory,pattern):
+def trimmomatic_jar():
+    '''
+    Trimmomatic jar file location
+    '''
+    return '/data/src/Trimmomatic-0.39/trimmomatic-0.39.jar'
+
+
+def find_files(directory, pattern):
+    '''
+    Given a directory and a pattern we find all files in there
+    '''
     return glob.glob(os.path.join(directory,pattern))
 
-################################################################################
-################################################################################
+
 def fastq_files_recursive(start_dir='.'):
+    '''
+    Given a root dir we find all fastq.gz files in all
+    subdirectories.
+    '''
     matches = []
     for root, dirnames, filenames in os.walk(start_dir):
         for filename in fnmatch.filter(filenames, '*.fastq.gz'):
             matches.append(os.path.join(root, filename))
     return matches
+
+
+def group(files: list, by: str) -> dict:
+    '''
+    Given a list of files we group them by the regular
+    expression given.
+    '''
+    grouped = defaultdict(list)
+    pattern = re.compile(by)
+
+    for fname in files:
+        match = pattern.match(fname)
+        if match:
+            key = match.group(1) 
+            grouped[key].append(fname)
+
+    return grouped
+
+
+def paired(fname: str) -> str:
+    '''
+    Given QEQ_AP_230718_5_S15_R1_001.fastq.gz
+    Returns QEQ_AP_230718_5_S15_R1_001P.fastq.gz
+    '''
+    path = Path(fname)
+    if path.name.endswith(".fastq.gz"):
+        stem = path.name[:-len(".fastq.gz")]
+        new_name = f"{stem}P.fastq.gz"
+        return new_name
+
+    print(f'ERROR: Not fastq file {fname}')
+    return fname
+
+
+def unpaired(fname: str) -> str:
+    '''
+    Given QEQ_AP_230718_5_S15_R1_001.fastq.gz
+    Returns QEQ_AP_230718_5_S15_R1_001U.fastq.gz
+    '''
+    path = Path(fname)
+    if path.name.endswith(".fastq.gz"):
+        stem = path.name[:-len(".fastq.gz")]
+        new_name = f"{stem}U.fastq.gz"
+        return new_name
+
+    print(f'ERROR: Not fastq file {fname}')
+    return fname
+
 
 ################################################################################
 ################################################################################
@@ -132,7 +196,7 @@ def set_state(config,state):
 ################################################################################
 def do_set_current_project_dir(config):
     print('Enter directory:'),
-    project_dir = raw_input()   
+    project_dir = input()   
     if os.path.isdir(project_dir):
         config.section_add('general','project_dir',project_dir)
 
@@ -141,7 +205,7 @@ def do_set_current_project_dir(config):
 def do_set_quality_score(config):
     project = config.section('general')['project_dir']  
     print('Enter quality score [20]:'),
-    qscore  = raw_input()
+    qscore  = input()
     if project == '':
         print('Project not yet set - please set project dir first!')
         return
@@ -153,7 +217,7 @@ def do_set_quality_score(config):
 ################################################################################
 def do_set_adaptor_dir(config):
     print('Enter directory:'),
-    new_adaptor_dir = raw_input()   
+    new_adaptor_dir = input()   
     if os.path.isdir(new_adaptor_dir):
         config.section_add('general','adaptor_dir',new_adaptor_dir)
 
@@ -176,11 +240,21 @@ def trim_paired_files_dir(config):
     project = config.section('general')['project_dir']
     return os.path.join(project, 'trim-paired-fastq')
 
-################################################################################
-################################################################################
-def slrum_dir(config):
+
+def pipeline_script_dir(config):
+    '''
+    Returns where the generated scripts are found
+    '''
     project = config.section('general')['project_dir']
-    return os.path.join(project, 'slrum-files')
+    return os.path.join(project, 'pipeline_scripts')
+
+
+def slurm_dir(config):
+    '''
+    Returns the directory of the slurm files
+    '''
+    project = config.section('general')['project_dir']
+    return os.path.join(project, 'slurm-files')
 
 ################################################################################
 ################################################################################
@@ -191,10 +265,13 @@ def demux_dir(config):
 def demux_fastq_dir(config):
     return "%s/%s" % (demux_dir(config), "fastq")
 
-################################################################################
-################################################################################
+
 def running_file(config,filename):
-    return  os.path.join(slrum_dir(config), filename)
+    '''
+    Helper to return the correct directory.
+    '''
+    return  os.path.join(pipeline_script_dir(config), filename)
+
 
 ################################################################################
 ################################################################################
@@ -218,7 +295,8 @@ def do_setup_pipeline_in_current_project_dir(config):
 
     # Create the following directories
     create_dir(original_files_dir(config))
-    create_dir(slrum_dir(config))
+    create_dir(slurm_dir(config))
+    create_dir(pipeline_script_dir(config))
     move_files(original_files_dir(config),fastq_gz_files)
     try:
         remove_dir(fastq_gz_files)
@@ -261,7 +339,7 @@ def do_run_adaptor_check_on_original_fastq_files(config):
     # Quick check to see if we can find the illumina adaptors
     # make sure everything is in order
     project = config.section('general')['project_dir']
-    slrum_adaptor_check = os.path.join(slrum_dir(config), 'adaptor_check.slrum')
+    slrum_adaptor_check = os.path.join(slurm_dir(config), 'adaptor_check.sh')
 
     # Make the QC directory for the results of the adpator check
     create_dir(original_qc_dir(config))
@@ -270,15 +348,7 @@ def do_run_adaptor_check_on_original_fastq_files(config):
     print('Writing job file: %s' % slrum_adaptor_check)
     fd = open(slrum_adaptor_check, 'w')
     
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=adaptor_check\n')
-    fd.write('#SBATCH --output=adaptor_check_%j.out\n')
-    fd.write('#SBATCH --error=adaptor_check_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-07:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'adaptor_check_running'))
     fd.write('# Adaptors to look for\n')
 
@@ -354,7 +424,7 @@ def do_run_fastqc_validator_on_original_fastq_files(config):
     # Quick check to see if we can find the illumina adaptors
     # make sure everything is in order
     project = config.section('general')['project_dir']
-    slrum_file = os.path.join(slrum_dir(config), 'fastq_validator_check.slrum')
+    slrum_file = os.path.join(slurm_dir(config), 'fastq_validator_check.sh')
 
     # Make the QC directory for the results 
     create_dir(original_qc_dir(config))
@@ -363,18 +433,8 @@ def do_run_fastqc_validator_on_original_fastq_files(config):
     print('Writing job file: %s' % slrum_file)
     fd = open(slrum_file, 'w')
     
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=fastq_valid_check\n')
-    fd.write('#SBATCH --output=fastq_validator_check_%j.out\n')
-    fd.write('#SBATCH --error=fastq_validator_check_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-05:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'fastq_validator_check_running'))
-    fd.write('# Modules\n')
-    fd.write('module add FastQValidator\n')
     fd.write('# Defines\n')
     fd.write('LOGFILE="%s"\n' % os.path.join(original_qc_dir(config), 'fastq_validator_check.log'))
     fd.write('# Code to run the validation\n')
@@ -398,7 +458,7 @@ def do_run_fastqc_on_original_fastq_files(config):
     # Quick check to see if we can find the illumina adaptors
     # make sure everything is in order
     project = config.section('general')['project_dir']
-    slrum_file = os.path.join(slrum_dir(config), 'fastq_original.slrum')
+    slrum_file = os.path.join(slurm_dir(config), 'fastq_original.sh')
 
     # Make the QC directory for the results 
     create_dir(original_qc_dir(config))
@@ -409,18 +469,8 @@ def do_run_fastqc_on_original_fastq_files(config):
     print('Writing job file: %s' % slrum_file)
     fd = open(slrum_file, 'w')
     
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=fastq_original_check\n')
-    fd.write('#SBATCH --output=fastq_original_check_%j.out\n')
-    fd.write('#SBATCH --error=fastq_original_check_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-05:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'fastq_original_running'))
-    fd.write('# Modules\n')
-    fd.write('module add FastQC/0.11.2\n')
     fd.write('# Code to run the validation\n')
     fd.write('echo "Running fastq on original files"\n')
     for fname in find_files(original_files_dir(config),'*.fastq.gz'):
@@ -436,98 +486,103 @@ def had_fastq_original_been_run(config):
         return 'Yes'
     return 'No'
 
-################################################################################
-################################################################################
+
 def do_run_trim_and_pair_original_fastq_files(config):
-    # Quick check to see if we can find the illumina adaptors
-    # make sure everything is in order
+    '''
+    Creates the script to run trimmomatic to pair the sequences.
+    '''
+    
     project = config.section('general')['project_dir']
     quality = current_project_quality_score(config)
-    slrum_file = os.path.join(slrum_dir(config), 'trim_and_pair_original_files.slrum')
+    script_file = os.path.join(pipeline_script_dir(config), 'trim_and_pair_original_files.sh')
 
-    # Create the SLRUM file to run the adptor check
-    print('Writing job file: %s' % slrum_file)
-    fd = open(slrum_file, 'w')
+    # Create the script file to run the adptor check
+    print('Writing job file: %s' % script_file)
+    fd = open(script_file, 'w')
     
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=trim_and_pair_original_files\n')
-    fd.write('#SBATCH --output=trim_and_pair_original_files_%j.out\n')
-    fd.write('#SBATCH --error=trim_and_pair_original_files_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-05:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'trim_and_pair_original_files_running'))
-    fd.write('# Modules\n')
-    fd.write('module add Java\n')
-    fd.write('module add Trimmomatic/0.33\n')
-    fd.write('# Code to run the validation\n')
     fd.write('echo "Running trim and pair on original files"\n')
 
-    unique = []
-    for fname in find_files(original_files_dir(config),'*.fastq.gz'):
-        head, tail = os.path.split(fname)
-        unique.append('%s_R' % '_'.join(tail.split('_')[0:-1]))
-    idens = list(set(unique))
- 
-    paired_dir = os.path.join( trim_paired_files_dir(config), 'paired' ) 
-    single_dir = os.path.join( trim_paired_files_dir(config), 'unpaired' ) 
+    # There should be two files one R1 one R2.
+    # R1 -> Forward read
+    # R2 <- Reverse read
+    
+    grouped_files = group(
+            find_files(original_files_dir(config), '*.fastq.gz'),
+            r"^(.*)_R\d+_")
+   
+    # Check there are only two in each group
+    for g in grouped_files:
+        numof = len(grouped_files[g])
+        if numof != 2:
+            print(f"Error: more than two files for group {grouped_files[g]}")
+            print('Error: Script incomplet, check filenames')
+            return
+
+    # Create the paired and unpaired directories
+    paired_dir = Path(trim_paired_files_dir(config)) / 'paired' 
+    single_dir = Path(trim_paired_files_dir(config)) / 'unpaired' 
+    origin_dir = original_files_dir(config)
 
     create_dir(paired_dir)  
     create_dir(single_dir)  
 
-    for iden in idens:
-        fd.write( 'java -Xms64m -Xmx2000m -jar "%s" PE -threads 8 -phred33 '
-                  '%s %s %s %s %s %s ILLUMINACLIP:"%s":2:30:10 '
-                  'HEADCROP:3 LEADING:20 SLIDINGWINDOW:4:%s MINLEN:200\n' % ( 
-                    trimmomatic_jar(),
-                    os.path.join( original_files_dir(config), '%s1.fastq.gz' % iden ),
-                    os.path.join( original_files_dir(config), '%s2.fastq.gz' % iden ),
-                    os.path.join( paired_dir, '%s1_001P.fastq.gz' % iden ), 
-                    os.path.join( single_dir, '%s1_001U.fastq.gz' % iden ), 
-                    os.path.join( paired_dir, '%s2_001P.fastq.gz' % iden ), 
-                    os.path.join( single_dir, '%s2_001U.fastq.gz' % iden ),
-                    os.path.join( adaptor_dir(config), 'NexteraPE-PE.fa' ),
-                    quality
-                ))
+    for g in grouped_files:
+        # Assuming that R1 will be before R2!
+        forward_fastq = grouped_files[g][0]
+        reverse_fastq = grouped_files[g][1]
+
+        f_fastq = Path(forward_fastq).name
+        r_fastq = Path(reverse_fastq).name
+
+        paired_forward_fastq = paired_dir / paired(f_fastq)
+        unpaired_forward_fastq = single_dir / unpaired(f_fastq)
+
+        paired_reverse_fastq = paired_dir / paired(r_fastq)
+        unpaired_reverse_fastq = single_dir / unpaired(r_fastq)
+
+        adaptors = Path(adaptor_dir(config)) / 'NexteraPE-PE.fa'
+
+        fd.write(
+            f'java -Xms64m -Xmx2000m -jar "{trimmomatic_jar()}" PE -threads 12 -phred33 '
+            f'{forward_fastq} '
+            f'{reverse_fastq} '
+            f'{paired_forward_fastq} '
+            f'{unpaired_forward_fastq} '
+            f'{paired_reverse_fastq} '
+            f'{unpaired_reverse_fastq} '
+            f'ILLUMINACLIP:{adaptors}:2:30:10 '
+            f'HEADCROP:3 LEADING:20 SLIDINGWINDOW:4:{quality} MINLEN:200\n')
         fd.write('\n')
 
     fd.write('mv %s %s\n' % (running_file(config,'trim_and_pair_original_files_running'), running_file(config,'trim_and_pair_original_files_done')))
     fd.close()
 
-################################################################################
-################################################################################
+    subprocess.run(['chmod', '+x', script_file]) 
+
+
 def do_run_merge_on_trim_and_paired_files(config):
-    # Quick check to see if we can find the illumina adaptors
-    # make sure everything is in order
+    '''
+    Run a merge and trim on the paired files
+    '''
     project = config.section('general')['project_dir']
-    slrum_file = os.path.join(slrum_dir(config), 'merge_trim_and_paired_files.slrum')
+    script_file = os.path.join(pipeline_script_dir(config), 'merge_trim_and_paired_files.sh')
 
     # Create the SLRUM file to run the adptor check
-    print('Writing job file: %s' % slrum_file)
-    fd = open(slrum_file, 'w')
+    print('Writing job file: %s' % script_file)
+    fd = open(script_file, 'w')
 
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=merge_trim_and_paired_files\n')
-    fd.write('#SBATCH --output=merge_trim_and_paired_files_%j.out\n')
-    fd.write('#SBATCH --error=merge_trim_and_paired_files_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-05:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'merge_trim_and_paired_files_running'))
-    fd.write('# Modules\n')
-    fd.write('module add FLASH/1.2.11\n')
     fd.write('# Code to run the procedure\n')
     fd.write('echo "Running merge on the trim and paired files"\n')
 
-    merged_dir = os.path.join( trim_paired_files_dir(config), 'paired-merged' ) 
-    merged_dir_qc = os.path.join( merged_dir, 'qc' )
-    merged_dir_merged = os.path.join( merged_dir, 'merged' )
-    merged_dir_not_merged = os.path.join( merged_dir, 'not-merged' )
-    paired_dir = os.path.join( trim_paired_files_dir(config), 'paired' ) 
+    merged_dir = os.path.join(trim_paired_files_dir(config), 'paired-merged') 
+    merged_dir_qc = os.path.join(merged_dir, 'qc')
+    merged_dir_merged = os.path.join(merged_dir, 'merged')
+    merged_dir_not_merged = os.path.join(merged_dir, 'not-merged')
+    paired_dir = os.path.join(trim_paired_files_dir(config), 'paired') 
 
     unique = []
     for fname in find_files(paired_dir,'*.fastq.gz'):
@@ -565,32 +620,22 @@ def do_run_merge_on_trim_and_paired_files(config):
 
     fd.close()
 
-################################################################################
-################################################################################
+    subprocess.run(['chmod', '+x', script_file]) 
+
+
 def do_demux_length_selection(config):
-    # Quick check to see if we can find the illumina adaptors
-    # make sure everything is in order
+    '''
+    Select by length and dereplicate
+    '''
     project = config.section('general')['project_dir']
-    slrum_file = os.path.join(slrum_dir(config), 'demux_length_selection.slrum')
+    script_file = os.path.join(pipeline_script_dir(config), 'demux_length_selection.sh')
 
     # Create the SLRUM file to run the adptor check
-    print('Writing job file: %s' % slrum_file)
-    fd = open(slrum_file, 'w')
+    print('Writing job file: %s' % script_file)
+    fd = open(script_file, 'w')
 
-    fd.write('#!/bin/bash --login\n')
-    fd.write('#SBATCH --job-name=demux_length_selected\n')
-    fd.write('#SBATCH --output=demux_length_selected_%j.out\n')
-    fd.write('#SBATCH --error=demux_length_selected_%j.err\n')
-    fd.write('#SBATCH --exclusive\n')
-    fd.write('#SBATCH --ntasks=32\n')
-    fd.write('#SBATCH --ntasks-per-node=32\n')
-    fd.write('#SBATCH --time=0-05:00\n')
-    fd.write('#SBATCH --mem-per-cpu=8000\n')
+    fd.write('#!/bin/bash\n')
     fd.write('touch %s\n' % running_file(config,'demux_length_selected_running'))
-    fd.write('# Modules\n')
-    fd.write('module add Java\n')
-    fd.write('module add Trimmomatic/0.33\n')
-    fd.write("module add vsearch/2.3.2\n")
     fd.write('# Code to run the procedure\n')
     fd.write('echo "Running selection on demuxed files"\n')
 
@@ -640,9 +685,13 @@ def do_demux_length_selection(config):
                 running_file(config,'demux_length_selected_done')))
     fd.close()
 
-################################################################################
-################################################################################
+    subprocess.run(['chmod', '+x', script_file]) 
+
+
 def do_concat_and_cluster(config):
+    '''
+    Concatanate all fastas and cluster together
+    '''
     project = config.section('general')['project_dir']
     
     demux_d = demux_dir(config)
@@ -666,9 +715,10 @@ def do_concat_and_cluster(config):
                                  '--project_dir=%s' % project])
 
 
-################################################################################
-################################################################################
 def do_blast(config):
+    '''
+    Blasts the dereplicated vsearch output
+    '''
     project = config.section('general')['project_dir']
     
     demux_d = demux_dir(config)
@@ -772,7 +822,8 @@ def top_menu(config):
         print('E. Exit')
         print('')
         print('Enter option:'),
-        option = raw_input()
+        option = input()
+        config.save()
 
         if option in key_dispatch:
             key_dispatch[option](config)
@@ -782,7 +833,7 @@ def top_menu(config):
 ################################################################################
 
 # Read the current configuration
-config = Configuration()
+with Configuration() as config:
+    # Process the user selection
+    top_menu(config)
 
-# Process the user selection
-top_menu(config)

@@ -59,6 +59,7 @@ def get_species(matched):
         perident = match[2].strip()
         quercov = match[6].strip()
         parts = match[4].split('|')
+        print(parts)
         species_list.append('%s %s %s (%s; PID:%s%%; QC:%s%%)' % (parts[3],parts[1],parts[2],bits,perident,quercov))
 
     return species_list
@@ -69,7 +70,6 @@ def extract_species(matched):
     species_list = []
 
     for rows in matched:
-        #print(rows)
         parts = rows[4].split('|')
 
         genus = parts[1]
@@ -187,6 +187,7 @@ def process_set(fd,blast_results,otu):
     for blast_id in blast_results:
         
         # Sort the entries by top bit score
+        print('Blast ID:', blast_id)
         blast_results[blast_id].sort(key = lambda row:float(row[3]),reverse=True)
 
         # Go through the entries and pick out all the top bit scored ones
@@ -270,16 +271,34 @@ def blast_summary(blast_fname, otu_fname, out_fname):
                     ids = last_id.split('=')[1].split(';')[0]
                     process_set(out_fd, working_set, otu_dict[ids])
                     working_set.clear()
-            
+
+                #
                 # Grab the data from the line
+                #
+                # centroid=ZAC_BP_240702_2_S224-1;seqs=27;size=7392,QEQ08|Dryas,100.000,467,0,0,31,497,1,467,0.0,863,467,92,integrifolia|Rosaceae
+                #
+                # 00 sid = centroid=ZAC_BP_240702_2_S224-1;seqs=27;size=7392,
+                # 01 sid_description = QEQ08|Dryas,
+                # 02 percent_score = 100.000,
+                # 03 467,
+                # 04 0,
+                # 05 0,
+                # 06 31,
+                # 07 497,
+                # 08 1,
+                # 09 467,
+                # 10 0.0,
+                # 11 bit_score = 863
+                # 12 467,
+                # 13 92,
+                # 14 desc = integrifolia|Rosaceae
+                #
                 sid = row[0]
-                sid_description = row[1]
+                sid_description = row[1].split('|')[0]
                 percent_score = row[2]
                 bit_score = row[11]
                 query_cover = row[13] 
                 desc = row[14]
-                if len(row) > 15:
-                    desc = row[14] + '|' + row[15].split('|')[1]
                 description = row[1] + '|' + desc
 
                 # Save off the data into the set

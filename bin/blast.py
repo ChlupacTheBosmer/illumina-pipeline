@@ -5,6 +5,9 @@ import os
 import shutil
 import glob
 import argparse
+import subprocess
+from pathlib import Path
+
 
 def script_dir():
     return os.path.dirname(os.path.realpath(__file__))
@@ -23,9 +26,9 @@ def blast(project_dir, primer):
 
     results_file = '%s/results-%s.txt' % (cluster_dir, primer)
 
-    blast_slurm = 'blast-%s' % primer
-    blast_slurm_fname = '%s.slurm' % blast_slurm
-    blast_path_name = '%s/slrum-files/%s' % (project_dir, blast_slurm_fname)
+    blast_script = 'blast-%s' % primer
+    blast_script_fname = '%s.sh' % blast_script
+    blast_path_name = '%s/pipeline_scripts/%s' % (project_dir, blast_script_fname)
 
     clusterd_file = 'clustered-%s-multis' % primer
     clusterd_path = '%s/%s.fasta' % (cluster_dir, clusterd_file)
@@ -33,39 +36,21 @@ def blast(project_dir, primer):
     create_dir(blast_dir)
 
     with open(blast_path_name, 'w') as sl:
-        sl.write("#!/bin/bash --login\n")
-        sl.write("#SBATCH --job-name=vsearch\n")
-        sl.write("#SBATCH --output=%s_%%j.out\n" % blast_slurm)
-        sl.write("#SBATCH --error=%s_%%j.err\n" % blast_slurm)
-        sl.write("#SBATCH --exclusive\n")
-        sl.write("#SBATCH --ntasks=32\n")
-        sl.write("#SBATCH --time=0-24:00\n")
-        sl.write("#SBATCH --mem-per-cpu=4000\n")
-        sl.write("touch %s_running\n" % blast_slurm)
-
-        sl.write("# Modules\n")
-        sl.write('module add compiler/intel/16.0\n')
-        sl.write('module add BLAST/2.2.31+\n')
+        sl.write("#!/bin/bash\n")
+        sl.write("touch %s_running\n" % blast_script)
 
         sl.write("# Code to run the procedure\n")
         sl.write('echo "Running BLAST on clustered file"\n')
 
-        sl.write('# Move to the BLAST db directory\n')
-        sl.write('pushd .\n')
-        sl.write('cd %s/BLAST-Tools/blast-db\n' % home) 
-        sl.write('# Run the BLAST\n')
-
         blast_csv = '%s/blast-%s.csv' % (blast_dir, clusterd_file)
         blast_log = '%s/blast-log-%s.txt' % (blast_dir, clusterd_file)
-        
-        sl.write("blastn -query '%s' -db 'restrictedblastdb' -out '%s' -outfmt '10 std score qcovs stitle' -max_target_seqs 20 -num_threads 16 >& %s\n"
-                 % (clusterd_path, blast_csv, blast_log))
+      
+        blast_ref = '/data/genbank/2025-07-13/nt'
 
-        sl.write('popd\n')
+        if Path(f'{project_dir}/blast-ref').exists():
+            blast_ref = Path(f'{project_dir}/blast-ref') / primer / primer
 
-        sl.write('module rm BLAST/2.2.31+\n')
-        sl.write('module rm compiler/intel/16.0\n')
-        sl.write('module add python/2.7.9\n')
+        sl.write(f"blastn -query '{clusterd_path}' -db '{blast_ref}' -out '{blast_csv}' -outfmt '10 std score qcovs stitle' -max_target_seqs 20 -num_threads 16 >& {blast_log}\n")
 
         # Process the BLAST results
         blast_summary = '%s/blast-summary-%s.csv' % (blast_dir, clusterd_file)
@@ -86,7 +71,10 @@ def blast(project_dir, primer):
         #sl.write("sort -t $',' -k 2 -r -g -o %s %s\n" %
         #         (blast_summary_sorted, blast_summary))
 
-        sl.write('mv %s_running %s_done\n' % (blast_slurm,blast_slurm))
+        sl.write('mv %s_running %s_done\n' % (blast_script, blast_script))
+
+        subprocess.run(['chmod', '+x', blast_path_name]) 
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
