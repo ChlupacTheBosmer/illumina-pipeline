@@ -11,6 +11,8 @@
 ###############################################################################
 
 from Bio import SeqIO
+from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import glob
 import os
 import fnmatch
@@ -18,6 +20,7 @@ import errno
 import gzip
 import re
 import argparse
+
 
 #forward_primers_full = {
 #    'rbcLaF': 'ATGTCACCACAAACAGAGACTAAAGC',
@@ -45,6 +48,7 @@ end_primers = {
 #    'uniplantR': 'CCCG[A|C|T][C|T]TGA[C|T][C|T]TG[A|G]GGTC[A|G|T]C',
 #}
 
+
 def compressed_fastq_to_fasta(fastq_path):
     path, fname = os.path.split(fastq_path)
     fasta_path = os.path.join(path, '%s.fasta' % fname.split('.')[0])
@@ -57,7 +61,7 @@ def compressed_fastq_to_fasta(fastq_path):
 
 
 def fastq_gz_files(start_dir='.'):
-    return glob.glob(os.path.join(start_dir, '*.fastq.gz'))
+    return sorted(Path(start_dir).glob("*.fastq.gz"))
 
 
 def mkdirs():
@@ -78,66 +82,86 @@ def mkdirs():
 
 def demux(fname):
     metrics = {}
-    with gzip.open(fname, "rt") as handle:
-        metrics['filename'] = fname
-        metrics['sequences'] = 0
-        metrics['seq'] = {}
-        metrics['seq']['unknown'] = []
-        printed = 0
-        for primer in start_primers:
-            metrics['seq'][primer] = []
-        for rseq in SeqIO.parse(handle, "fastq"):
-            metrics['sequences'] += 1
-            found = False
-            # Look for forward primer
-            for primer in start_primers:
-                bcode = start_primers[primer]
-                if re.search(bcode, str(rseq.seq)[:50]):
-                    metrics['seq'][primer].append(rseq)
-                    found = True
-            if not found:
-                # Didn't find so look for reverse primer
-                for primer in end_primers:
-                    bcode = end_primers[primer]
-                    if re.search(bcode, str(rseq.seq)[-50:]):
-                        metrics['seq'][primer].append(rseq)
+
+    try:
+        with gzip.open(fname, "rt") as handle:
+            metrics['filename'] = fname
+            metrics['sequences'] = 0
+            metrics['seq'] = {}
+            
+            for primer in list(start_primers.keys()) + ['unknown']:
+                metrics['seq'][primer] = {
+                    "file": gzip.open(
+                        f'./{primer}/fastq/{os.path.basename(fname)}', "wt"),
+                    "numof": 0}
+
+            for rseq in SeqIO.parse(handle, "fastq"):
+                metrics['sequences'] += 1
+                found = False
+                # Look for forward primer
+                for primer in start_primers:
+                    bcode = start_primers[primer]
+                    if re.search(bcode, str(rseq.seq)[:50]):
+                        SeqIO.write(
+                            sequences=rseq,
+                            handle=metrics['seq'][primer]['file'],
+                            format="fastq")
+                        metrics['seq'][primer]["numof"] += 1
                         found = True
                 if not found:
-                    metrics['seq']['unknown'].append(rseq)
-                    if printed < 10:
-                        print("Unknown:", str(rseq.seq))
-                        printed += 1
-        for prime in metrics['seq']:
-            newfname = './%s/fastq/%s' % (prime, os.path.basename(fname))
-            with gzip.open(newfname, 'wt') as fh:
-                SeqIO.write(
-                    sequences=metrics['seq'][prime],
-                    handle=fh,
-                    format="fastq")
+                    # Didn't find so look for reverse primer
+                    for primer in end_primers:
+                        bcode = end_primers[primer]
+                        if re.search(bcode, str(rseq.seq)[-50:]):
+                            SeqIO.write(
+                                sequences=rseq,
+                                handle=metrics['seq'][primer]['file'],
+                                format="fastq")
+                            metrics['seq'][primer]["numof"] += 1
+                            found = True
+                    if not found:
+                        SeqIO.write(
+                            sequences=rseq,
+                            handle=metrics['seq']['unknown']['file'],
+                            format="fastq")
+                        metrics['seq']['unknown']["numof"] += 1
+    finally:
+        for primer in list(start_primers.keys()) + ['unknown']:
+            metrics['seq'][primer]['file'].close()
+            metrics['seq'][primer]['file'] = ''
+
     return metrics
 
-
-def num_seq(meta, primer):
-    try:
-        return len(meta['seq'][primer])
-    except Exception as x:
-        return 0
 
 def demultiplex(fastq_files):
     with open('demultiplex_meta_data.csv', 'w') as md:
         header = 'Filename,Sequences,rbcL,ITS2,unknown\n'
-        print(header)
         md.write(header)
-        for fname in fastq_files:
-            meta = demux(fname)
-            out = str('%s,%d,%d,%d,%d\n' % (
-                meta['filename'],
-                meta['sequences'],
-                num_seq(meta, 'rbcL'),
-                num_seq(meta, 'ITS2'),
-                num_seq(meta, 'unknown')))
-            print(out)
-            md.write(out)
+        max_workers = os.cpu_count() or 1
+        with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            future_map = {ex.submit(demux, p): p for p in fastq_files}
+            complete = 0 
+            for fut in as_completed(future_map):
+                src = future_map[fut]
+                try:
+                    meta = fut.result()
+                    complete += 1
+                    print(
+                        f'Done: {complete:03}, '  
+                        f'{meta["filename"]}, '
+                        f'{meta["sequences"]}, '
+                        f'{meta["seq"]["rbcL"]["numof"]}, '
+                        f'{meta["seq"]["ITS2"]["numof"]}, '
+                        f'{meta["seq"]["unknown"]["numof"]}')
+                    out = str('%s,%d,%d,%d,%d\n' % (
+                        meta['filename'],
+                        meta['sequences'],
+                        meta['seq']['rbcL']['numof'],
+                        meta['seq']['ITS2']['numof'],
+                        meta['seq']['unknown']['numof']))
+                    md.write(out)
+                except Exception as x:
+                    print(src.name, f'ERROR: {x}')
 
 
 if __name__ == "__main__":
