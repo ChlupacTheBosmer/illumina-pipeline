@@ -511,6 +511,10 @@ def do_run_trim_and_pair_original_fastq_files(config):
     grouped_files = group(
             find_files(original_files_dir(config), '*.fastq.gz'),
             r"^(.*)_R\d+_")
+
+    for g in grouped_files:
+        for i, f in enumerate(g):
+            print(f)
    
     # Check there are only two in each group
     for g in grouped_files:
