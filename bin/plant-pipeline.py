@@ -507,17 +507,12 @@ def do_run_trim_and_pair_original_fastq_files(config):
     # There should be two files one R1 one R2.
     # R1 -> Forward read
     # R2 <- Reverse read
-
-    print(original_files_dir(config))
     
     grouped_files = group(
             find_files(original_files_dir(config), '*.fastq.gz'),
             r"^(.*)_R\d+")
 
-    print("len: ", len(grouped_files))
-    for g in grouped_files:
-        for i, f in enumerate(g):
-            print(f)
+    print("Found number of files: ", len(grouped_files))
    
     # Check there are only two in each group
     for g in grouped_files:
