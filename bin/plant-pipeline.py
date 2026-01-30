@@ -440,7 +440,7 @@ def do_run_fastqc_validator_on_original_fastq_files(config):
     fd.write('# Code to run the validation\n')
     fd.write('echo "Running fastq validator check" > "$LOGFILE"\n')
     for fname in find_files(original_files_dir(config),'*.fastq.gz'):
-        fd.write('"fastQValidator" --file "%s" >> "$LOGFILE"\n' % fname)
+        fd.write('"fastQValidator" --noeof --file "%s" >> "$LOGFILE"\n' % fname)
 
     fd.write('mv %s %s\n' % (running_file(config,'fastq_validator_check_running'), running_file(config,'fastq_validator_check_done')))
     fd.close()
