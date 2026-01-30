@@ -546,9 +546,8 @@ def do_run_trim_and_pair_original_fastq_files(config):
 
         adaptors = Path(adaptor_dir(config)) / 'NexteraPE-PE.fa'
 
-        trimmomatic PE -threads 12 -phred33
         fd.write(
-            f'java -Xms64m -Xmx2000m -jar {trimmomatic_jar()} PE -threads 12 -phred33 '
+            f'java -Xms64m -Xmx2000m -jar "{trimmomatic_jar()}" PE -threads 12 -phred33 '
             f'{forward_fastq} '
             f'{reverse_fastq} '
             f'{paired_forward_fastq} '
