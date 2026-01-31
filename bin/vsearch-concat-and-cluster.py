@@ -42,9 +42,13 @@ def cluster(project_dir, input_dir):
 
     create_dir(cluster_dir)
 
+    pipeline_scripts_dir = os.path.dirname(vsearch_script_name)
+    running_file_path = os.path.join(pipeline_scripts_dir, "%s_running" % vsearch_script)
+    done_file_path = os.path.join(pipeline_scripts_dir, "%s_done" % vsearch_script)
+
     with open(vsearch_script_name, 'w') as sl:
         sl.write("#!/bin/bash\n")
-        sl.write("touch %s_running\n" % vsearch_script)
+        sl.write("touch %s\n" % running_file_path)
 
         sl.write("# Code to run the procedure\n")
         sl.write('echo "Running vsearch on the dereplicated fasta files"\n')
@@ -60,7 +64,7 @@ def cluster(project_dir, input_dir):
         sl.write('%s/splitting_concat_clustered_file.py --input_file=%s\n' 
                 % (bin_dir, clustered_fname))
 
-        sl.write('mv %s_running %s_done\n' % (vsearch_script, vsearch_script))
+        sl.write('mv %s %s\n' % (running_file_path, done_file_path))
     
     subprocess.run(['chmod', '+x', vsearch_script_name]) 
 

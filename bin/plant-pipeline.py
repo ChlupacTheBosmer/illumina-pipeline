@@ -42,6 +42,7 @@ class Configuration:
 
     def __enter__(self):
         self.config.add_section('general')
+        self.config.add_section('paths')
         self.config.read(self.name())
         return self
 
@@ -90,11 +91,49 @@ def script_dir():
     return os.path.dirname(os.path.realpath(__file__))
 
 
-def trimmomatic_jar():
+def trimmomatic_jar(config=None):
     '''
     Trimmomatic jar file location
     '''
-    return "/usr/local/share/trimmomatic/trimmomatic.jar"
+    default_path = "/usr/local/share/trimmomatic/trimmomatic.jar"
+    if config:
+        paths = config.section('paths')
+        if paths and 'trimmomatic_jar' in paths:
+            return paths['trimmomatic_jar']
+    return default_path
+
+def fastqc_path(config=None):
+    '''
+    fastqc binary location
+    '''
+    default_path = "fastqc"
+    if config:
+        paths = config.section('paths')
+        if paths and 'fastqc' in paths:
+            return paths['fastqc']
+    return default_path
+
+def flash_path(config=None):
+    '''
+    flash binary location
+    '''
+    default_path = "flash"
+    if config:
+        paths = config.section('paths')
+        if paths and 'flash' in paths:
+            return paths['flash']
+    return default_path
+
+def fastq_validator_path(config=None):
+    '''
+    fastQValidator binary location
+    '''
+    default_path = "fastQValidator"
+    if config:
+        paths = config.section('paths')
+        if paths and 'fastq_validator' in paths:
+            return paths['fastq_validator']
+    return default_path
 
 
 def find_files(directory, pattern):
@@ -440,7 +479,7 @@ def do_run_fastqc_validator_on_original_fastq_files(config):
     fd.write('# Code to run the validation\n')
     fd.write('echo "Running fastq validator check" > "$LOGFILE"\n')
     for fname in find_files(original_files_dir(config),'*.fastq.gz'):
-        fd.write('"fastQValidator" --noeof --file "%s" >> "$LOGFILE"\n' % fname)
+        fd.write('"%s" --noeof --file "%s" >> "$LOGFILE"\n' % (fastq_validator_path(config), fname))
 
     fd.write('mv %s %s\n' % (running_file(config,'fastq_validator_check_running'), running_file(config,'fastq_validator_check_done')))
     fd.close()
@@ -474,7 +513,7 @@ def do_run_fastqc_on_original_fastq_files(config):
     fd.write('# Code to run the validation\n')
     fd.write('echo "Running fastq on original files"\n')
     for fname in find_files(original_files_dir(config),'*.fastq.gz'):
-        fd.write('fastqc "%s" -o "%s" --extract\n' % (fname,qc_dir))
+        fd.write('"%s" "%s" -o "%s" --extract\n' % (fastqc_path(config), fname,qc_dir))
 
     fd.write('mv %s %s\n' % (running_file(config,'fastq_original_running'), running_file(config,'fastq_original_done')))
     fd.close()
@@ -547,7 +586,7 @@ def do_run_trim_and_pair_original_fastq_files(config):
         adaptors = Path(adaptor_dir(config)) / 'NexteraPE-PE.fa'
 
         fd.write(
-            f'java -Xms64m -Xmx2000m -jar "{trimmomatic_jar()}" PE -threads 12 -phred33 '
+            f'java -Xms64m -Xmx2000m -jar "{trimmomatic_jar(config)}" PE -threads 12 -phred33 '
             f'{forward_fastq} '
             f'{reverse_fastq} '
             f'{paired_forward_fastq} '
@@ -586,28 +625,39 @@ def do_run_merge_on_trim_and_paired_files(config):
     merged_dir_not_merged = os.path.join(merged_dir, 'not-merged')
     paired_dir = os.path.join(trim_paired_files_dir(config), 'paired') 
 
-    unique = []
-    for fname in find_files(paired_dir,'*.fastq.gz'):
-        head, tail = os.path.split(fname)
-        unique.append('%s_R' % '_'.join(tail.split('_')[0:-2]))
-    idens = list(set(unique))
+    grouped_files = group(
+            find_files(paired_dir, '*.fastq.gz'),
+            r"^(.*)_R[12]P\.fastq\.gz$")
+
+    print("Found number of merged groups: ", len(grouped_files))
 
     create_dir(merged_dir)
     create_dir(merged_dir_merged)
     create_dir(merged_dir_qc)
     create_dir(merged_dir_not_merged)
 
-    for iden in idens:
-        fd.write( 'flash -d "%s" --max-overlap 450 --min-overlap 10 --max-mismatch-density 0.25 -t 1 -z %s %s\n' % (
+    for iden in grouped_files:
+        files = grouped_files[iden]
+        if len(files) != 2:
+            print(f"Error: Group {iden} does not have exactly 2 files: {files}")
+            continue
+        
+        files.sort() # Ensure we have R1 and R2 order
+        
+        # files[0] should be R1, files[1] should be R2
+        iden_name = os.path.basename(iden)
+        
+        fd.write( '"%s" -d "%s" --max-overlap 450 --min-overlap 10 --max-mismatch-density 0.25 -t 1 -z %s %s\n' % (
+                    flash_path(config),
                     merged_dir,
-                    os.path.join( paired_dir, '%s1_001P.fastq.gz' % iden ),
-                    os.path.join( paired_dir, '%s2_001P.fastq.gz' % iden ),
+                    files[0],
+                    files[1],
         ))
-        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.notCombined_1.fastq.gz' ), os.path.join( merged_dir_not_merged, '%s1_001P.fastq.gz' % iden )))
-        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.notCombined_2.fastq.gz' ), os.path.join( merged_dir_not_merged, '%s2_001P.fastq.gz' % iden )))
-        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.extendedFrags.fastq.gz' ), os.path.join( merged_dir_merged, '%s_merged.fastq.gz' % iden )))
-        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.hist' ), os.path.join( merged_dir_qc, '%s_hist.txt' % iden )))
-        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.histogram' ), os.path.join( merged_dir_qc, '%s_histogram.txt' % iden ))) 
+        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.notCombined_1.fastq.gz' ), os.path.join( merged_dir_not_merged, '%s_R1P.fastq.gz' % iden_name )))
+        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.notCombined_2.fastq.gz' ), os.path.join( merged_dir_not_merged, '%s_R2P.fastq.gz' % iden_name )))
+        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.extendedFrags.fastq.gz' ), os.path.join( merged_dir_merged, '%s_merged.fastq.gz' % iden_name )))
+        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.hist' ), os.path.join( merged_dir_qc, '%s_hist.txt' % iden_name )))
+        fd.write('mv %s %s\n' % ( os.path.join( merged_dir, 'out.histogram' ), os.path.join( merged_dir_qc, '%s_histogram.txt' % iden_name ))) 
         fd.write('\n')
 
     demultiplex_dir = demux_dir(config)
@@ -671,7 +721,7 @@ def do_demux_length_selection(config):
         for fname in fastq_files:
             head, tail = os.path.split(fname)
             fd.write( 'java -Xms64m -Xmx2000m -jar "%s" SE -threads 8 -phred33 %s %s MINLEN:%d\n' % (
-                        trimmomatic_jar(),
+                        trimmomatic_jar(config),
                         fname,
                         os.path.join( length_selected_fastq_dir, tail ),
                         min_seq_length))
@@ -761,14 +811,42 @@ def had_merge_on_trim_and_paired(config):
 ################################################################################
 ################################################################################
 def had_merged_files_been_length_selected(config):
-    if os.path.isfile(running_file(config,'merged_files_length_selected_done')):
+    if os.path.isfile(running_file(config,'demux_length_selected_done')):
         return 'Yes'
     return 'No'
 
 ################################################################################
 ################################################################################
 def had_selected_merged_files_been_converted_to_fasta(config):
-    if os.path.isfile(running_file(config,'selected_merged_files_convert_and_calapse_done')):
+    if os.path.isfile(running_file(config,'demux_length_selected_done')):
+        return 'Yes'
+    return 'No'
+
+################################################################################
+################################################################################
+def had_concat_and_cluster_been_run(config):
+    project = config.section('general')['project_dir']
+    demux_d = demux_dir(config)
+    
+    # If no primers found or no demux dir, implies not run
+    if not os.path.exists(demux_d):
+        return 'No'
+
+    found_any_primer = False
+    all_done = True
+    
+    for primer in demux_script.start_primers:
+        primer_dir = '%s/%s' % (demux_d, primer)
+        if not os.path.isdir(primer_dir):
+            continue
+            
+        found_any_primer = True
+        vsearch_script = 'vsearch-%s' % primer
+        if not os.path.isfile(running_file(config, '%s_done' % vsearch_script)):
+            all_done = False
+            break
+            
+    if found_any_primer and all_done:
         return 'Yes'
     return 'No'
 
@@ -806,6 +884,7 @@ def top_menu(config):
             print('Has merge been run on trim and paired files?                    : %s' % had_merge_on_trim_and_paired(config))
             print('Has merged files been length selected?                          : %s' % had_merged_files_been_length_selected(config))
             print('Has selected merged files been converted and collapse to fasta? : %s' % had_selected_merged_files_been_converted_to_fasta(config))
+            print('Has concat and cluster been run?                                : %s' % had_concat_and_cluster_been_run(config))
         print('')
         print('1. Set current project directory')
         print('2. Set current adaptor directory')
